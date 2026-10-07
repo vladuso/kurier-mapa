@@ -54,7 +54,7 @@ function Courier({ session }) {
   const [focus, setFocus] = useState(null);
   const [needsUpdate, setNeedsUpdate] = useState(false); // databáza ešte nemá stĺpec status
 
-  const say =useCallback((text) => { setToast(text); setTimeout(() => setToast((t) => (t === text ? null : t)), 3500); }, []);
+  const say =useCallback((text) => { setToast(text); setTimeout(() => setToast((t) => (t === text ? null : t)), 2200); }, []);
 
   // načítanie dát
   const reload = useCallback(async () => {
@@ -268,7 +268,7 @@ function Courier({ session }) {
   }
 
   return (
-    <div className="app">
+    <div className={"app" + (tab === "route" || picking ? "" : " no-map")}>
       <header className="top">
         <div className="brand">Kuriérska mapa</div>
         <div className="stat">
@@ -327,6 +327,22 @@ function Courier({ session }) {
   );
 }
 
+// +421905123456 → 0905 123 456
+export function prettyPhone(p) {
+  const d = String(p || "").replace(/\D/g, "");
+  const local = d.startsWith("421") ? "0" + d.slice(3) : d;
+  return local.length === 10 ? `${local.slice(0, 4)} ${local.slice(4, 7)} ${local.slice(7)}` : p;
+}
+
+// Odstránenie na dva ťuky, aby sa balík nezmazal omylom
+function DeleteButton({ onConfirm }) {
+  const [ask, setAsk] = useState(false);
+  useEffect(() => { if (!ask) return; const t = setTimeout(() => setAsk(false), 4000); return () => clearTimeout(t); }, [ask]);
+  return ask
+    ? <button className="btn danger confirm" onClick={onConfirm}>Naozaj odstrániť?</button>
+    : <button className="btn danger" onClick={() => setAsk(true)}>Odstrániť</button>;
+}
+
 function navLinks(s) {
   return {
     google: `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}&travelmode=driving`,
@@ -363,7 +379,7 @@ function RouteTab({ plan, mode, setMode, missing, done, failed, later, selected,
             </div>
           )}
           <div className="row wrap">
-            {selected.phone && <a className="btn primary" href={`tel:${selected.phone}`}>Zavolať {selected.phone}</a>}
+            {selected.phone && <a className="btn primary" href={`tel:${selected.phone}`}>Zavolať {prettyPhone(selected.phone)}</a>}
             {selected.lat != null && (
               <>
                 <a className="btn" href={navLinks(selected).google} target="_blank" rel="noreferrer">Google Maps</a>
@@ -380,7 +396,7 @@ function RouteTab({ plan, mode, setMode, missing, done, failed, later, selected,
               }}>{selected.fixed ? "Posunúť vchod" : "Opraviť vchod"}</button>
             )}
             {selected.fixed && <button className="btn" onClick={() => forgetEntrance(selected.address_key)}>Zrušiť opravu vchodu</button>}
-            <button className="btn danger" onClick={() => deleteStop(selected.id)}>Odstrániť</button>
+            <DeleteButton onConfirm={() => deleteStop(selected.id)} />
           </div>
         </section>
       )}
@@ -455,7 +471,7 @@ function RouteTab({ plan, mode, setMode, missing, done, failed, later, selected,
             {list.map((s) => (
               <li key={s.id}><button className={"item " + st + (s.id === selectedId ? " cur" : "")} onClick={() => select(s.id)}>
                 <span className="num">{STATUS[st].icon}</span><span className="addr">{s.label}</span>
-                {s.phone && st === "later" ? <span className="tag cross">{s.phone}</span> : null}</button></li>
+                {s.phone && st === "later" ? <span className="tag cross">{prettyPhone(s.phone)}</span> : null}</button></li>
             ))}
           </ul>
           {st === "delivered" && <button className="btn small" onClick={clearDelivered}>Vymazať doručené zo zoznamu</button>}

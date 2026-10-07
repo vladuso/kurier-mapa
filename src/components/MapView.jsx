@@ -33,7 +33,10 @@ export default function MapView({ stops, route, start, selectedId, picking, onSe
     });
     m.on("click", (e) => { if (pickingRef.current) pickRef.current?.({ lat: e.lngLat.lat, lon: e.lngLat.lng }); });
     map.current = m;
-    return () => m.remove();
+    // mapa sa skrýva na iných kartách, po návrate treba prepočítať jej veľkosť
+    const ro = new ResizeObserver(() => { if (box.current?.offsetWidth) m.resize(); });
+    ro.observe(box.current);
+    return () => { ro.disconnect(); m.remove(); };
   }, []);
 
   // trasa
