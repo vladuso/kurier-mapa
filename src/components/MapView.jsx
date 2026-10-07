@@ -60,8 +60,9 @@ export default function MapView({ stops, route, start, selectedId, picking, onSe
       }
       const el = mk.getElement();
       el.dataset.id = s.id;
-      el.textContent = s.delivered ? "✓" : s.n;
-      el.style.background = s.delivered ? "#8b958f" : s.color;
+      el.textContent = s.n;
+      el.style.background = s.color;
+      el.classList.toggle("dim", s.status && s.status !== "open");
       el.classList.toggle("sel", s.id === selectedId);
       el.classList.toggle("fixed", !!s.fixed);
       el.setAttribute("aria-label", `Zastávka ${s.n}: ${s.label}`);

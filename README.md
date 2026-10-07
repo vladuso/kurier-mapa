@@ -13,6 +13,9 @@ Kuriéri si navzájom zdieľajú opravené vchody.
 - ručné označenie adresy, ktorú appka nepozná (zapamätá si ju)
 - Doručené, navigácia cez Google Maps alebo Waze
 - import všetkých adries Partizánskeho z OpenStreetMap
+- čítanie adresy a telefónu z fotky štítku (priamo v telefóne)
+- stav balíka: Doručené, Nedoručené, Zavolať neskôr (s tlačidlom na hovor)
+- Prehľad: tachometer, tankovanie, spotreba, cena za km, ušetrené km, € a čas
 
 ## Spustenie (raz)
 
@@ -26,6 +29,11 @@ Kuriéri si navzájom zdieľajú opravené vchody.
    a klikni **Deploy**.
 5. Otvor appku, vytvor si účet a v **Nastaveniach** klikni **Načítať adresy (Partizánske)**.
 6. V mobile: v prehliadači menu → **Pridať na plochu**.
+
+## Aktualizácie databázy
+
+Po aktualizácii appky môže Nastavenia ukázať „Aktualizácia databázy“. Klikni Kopírovať, vlož do Supabase → SQL Editor → Run.
+Súbory: `supabase/update-2-stavy.sql`.
 
 ## Pre vývojára
 

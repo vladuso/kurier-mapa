@@ -5,6 +5,8 @@ import { planRoute, streetOrder, routeLength } from "./lib/route.js";
 import { CITY, fetchCityAddresses, geocodeOne } from "./lib/geodata.js";
 import MapView, { PALETTE } from "./components/MapView.jsx";
 import AuthScreen from "./components/AuthScreen.jsx";
+import StatsTab from "./components/StatsTab.jsx";
+import updateSql from "../supabase/update-2-stavy.sql?raw";
 
 const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD v miestnom čase
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
@@ -50,8 +52,9 @@ function Courier({ session }) {
   const [start, setStart] = useState(() => load("kurier-start", CITY.center));
   const [radius, setRadius] = useState(() => load("kurier-radius", 80));
   const [focus, setFocus] = useState(null);
+  const [needsUpdate, setNeedsUpdate] = useState(false); // databáza ešte nemá stĺpec status
 
-  const say = useCallback((text) => { setToast(text); setTimeout(() => setToast((t) => (t === text ? null : t)), 3500); }, []);
+  const say =useCallback((text) => { setToast(text); setTimeout(() => setToast((t) => (t === text ? null : t)), 3500); }, []);
 
   // načítanie dát
   const reload = useCallback(async () => {
@@ -62,6 +65,8 @@ function Courier({ session }) {
         supabase.from("stops").select("*").eq("day", today()).order("created_at"),
       ]);
       if (st.error) throw st.error;
+      const probe = await supabase.from("stops").select("status,phone").limit(1);
+      setNeedsUpdate(!!probe.error);
       setAddresses(new Map(addr.map((a) => [a.key, a])));
       setEntrances(new Map(ent.map((e) => [e.key, e])));
       setStops(st.data);
@@ -73,6 +78,7 @@ function Courier({ session }) {
   useEffect(() => { reload(); }, [reload]);
 
   const streets = useMemo(() => [...new Set([...addresses.values()].map((a) => a.street))], [addresses]);
+  const ocrCtx = useMemo(() => ({ streets, keys: new Set(addresses.keys()) }), [streets, addresses]);
 
   // poloha každej zastávky: naučený vchod má prednosť
   const located = useMemo(() => stops.map((s) => {
@@ -84,12 +90,15 @@ function Courier({ session }) {
       street: addr?.street || p?.street, number: addr?.number || p?.number,
       lat: ent ? ent.lat : s.lat, lon: ent ? ent.lon : s.lon,
       fixed: !!ent, note: ent?.note,
+      status: s.status || (s.delivered ? "delivered" : "open"),
     };
   }), [stops, entrances, addresses]);
 
-  const open = useMemo(() => located.filter((s) => !s.delivered && s.lat != null), [located]);
-  const missing = useMemo(() => located.filter((s) => s.lat == null), [located]);
-  const done = useMemo(() => located.filter((s) => s.delivered), [located]);
+  const open = useMemo(() => located.filter((s) => s.status === "open" && s.lat != null), [located]);
+  const missing = useMemo(() => located.filter((s) => s.status === "open" && s.lat == null), [located]);
+  const done = useMemo(() => located.filter((s) => s.status === "delivered"), [located]);
+  const failed = useMemo(() => located.filter((s) => s.status === "failed"), [located]);
+  const later = useMemo(() => located.filter((s) => s.status === "later"), [located]);
 
   const plan = useMemo(() => {
     if (mode === "geo") return planRoute(open, start, radius);
@@ -105,14 +114,20 @@ function Courier({ session }) {
   const ordered = useMemo(() => plan.flatMap((g) => g.items), [plan]);
   const geoLen = useMemo(() => routeLength(planRoute(open, start, radius).flatMap((g) => g.items), start), [open, start, radius]); // eslint-disable-line react-hooks/exhaustive-deps
   const streetLen = useMemo(() => routeLength(streetOrder(open), start), [open, start]); // eslint-disable-line react-hooks/exhaustive-deps
+  // úspora za celý deň (všetky dnešné balíky, aj doručené), aby neklesala počas rozvozu
+  const dayPts = useMemo(() => located.filter((s) => s.lat != null), [located]);
+  const dayGeoLen = useMemo(() => routeLength(planRoute(dayPts, start, radius).flatMap((g) => g.items), start), [dayPts, start, radius]);
+  const dayStreetLen = useMemo(() => routeLength(streetOrder(dayPts), start), [dayPts, start]);
 
   const mapStops = useMemo(() => {
     const out = [];
     let n = 0;
     plan.forEach((g, gi) => g.items.forEach((s) => out.push({ ...s, n: ++n, color: PALETTE[gi % PALETTE.length] })));
-    done.forEach((s) => s.lat != null && out.push({ ...s, n: "✓", color: "#8b958f" }));
+    later.forEach((s) => s.lat != null && out.push({ ...s, n: "☎", color: STATUS.later.color }));
+    failed.forEach((s) => s.lat != null && out.push({ ...s, n: "✕", color: STATUS.failed.color }));
+    done.forEach((s) => s.lat != null && out.push({ ...s, n: "✓", color: STATUS.delivered.color }));
     return out;
-  }, [plan, done]);
+  }, [plan, done, failed, later]);
   const routeLine = useMemo(() => [start, ...ordered].map((p) => [p.lon, p.lat]), [ordered, start]);
 
   // --- akcie ---------------------------------------------------------------
@@ -124,12 +139,13 @@ function Courier({ session }) {
     setAddresses((m) => new Map(m).set(row.key, row));
   }
 
-  async function addStops(text, onProgress) {
-    const lines = splitLines(text);
+  // items: text (jedna adresa na riadok) alebo pole {line, phone} z fotiek štítkov
+  async function addStops(items, onProgress) {
+    const list = typeof items === "string" ? splitLines(items).map((line) => ({ line })) : items;
     const results = { found: 0, approx: 0, missing: [] };
     let i = 0;
-    for (const line of lines) {
-      onProgress?.(++i, lines.length);
+    for (const { line, phone } of list) {
+      onProgress?.(++i, list.length);
       let p = parseAddress(line);
       let lat = null, lon = null, key = null;
       if (p) {
@@ -145,8 +161,9 @@ function Courier({ session }) {
           } catch { results.missing.push(line); }
         }
       } else results.missing.push(line);
-      const { data, error } = await supabase.from("stops")
-        .insert({ day: today(), label: p ? p.label : line, address_key: key, lat, lon }).select().single();
+      const row = { day: today(), label: p ? p.label : line, address_key: key, lat, lon };
+      if (phone && !needsUpdate) row.phone = phone;
+      const { data, error } = await supabase.from("stops").insert(row).select().single();
       if (error) throw error;
       setStops((s) => [...s, data]);
     }
@@ -158,6 +175,24 @@ function Courier({ session }) {
     setStops((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x)));
     const { error } = await supabase.from("stops").update(patch).eq("id", id);
     if (error) { say("Zmena sa neuložila: " + error.message); reload(); }
+  }
+
+  // Doručené / Nedoručené / Zavolať neskôr / späť na trasu
+  async function setStatus(stop, status) {
+    if (needsUpdate && (status === "failed" || status === "later")) {
+      say("Najprv treba aktualizovať databázu (návod je v Nastaveniach).");
+      return;
+    }
+    const patch = needsUpdate
+      ? { delivered: status === "delivered" }
+      : { status, delivered: status === "delivered", status_at: new Date().toISOString() };
+    // ďalšia zastávka v poradí, aby kuriér nemusel hľadať
+    const idx = ordered.findIndex((s) => s.id === stop.id);
+    const next = idx >= 0 ? ordered[idx + 1] || ordered[idx - 1] : ordered[0];
+    await patchStop(stop.id, patch);
+    say(STATUS[status].done);
+    if (status !== "open" && next && next.id !== stop.id) select(next.id);
+    else setSelectedId(status === "open" ? stop.id : null);
   }
 
   async function deleteStop(id) {
@@ -208,7 +243,7 @@ function Courier({ session }) {
   async function clearDelivered() {
     const ids = done.map((s) => s.id);
     if (!ids.length) return;
-    setStops((s) => s.filter((x) => !x.delivered));
+    setStops((s) => s.filter((x) => !ids.includes(x.id)));
     const { error } = await supabase.from("stops").delete().in("id", ids);
     if (error) { say("Nepodarilo sa: " + error.message); reload(); }
   }
@@ -259,14 +294,22 @@ function Courier({ session }) {
       <main className="sheet">
         {error && <p className="err">{error}</p>}
         {loading && <p className="muted">Načítavam…</p>}
+        {needsUpdate && tab !== "settings" && !loading && (
+          <p className="card warn">Nové funkcie (nedoručené, zavolať neskôr, prehľad) potrebujú jednu aktualizáciu databázy.{" "}
+            <button className="link" onClick={() => setTab("settings")}>Ukáž mi ako</button></p>
+        )}
 
         {tab === "route" && !loading && (
-          <RouteTab {...{ plan, mode, setMode, missing, done, selected, selN, selectedId, select, patchStop, deleteStop,
+          <RouteTab {...{ plan, mode, setMode, missing, done, failed, later, selected, selN, selectedId, select, setStatus, deleteStop,
             setPicking, forgetEntrance, clearDelivered, setTab, setFocus, start }} />
         )}
-        {tab === "add" && !loading && <AddTab addStops={addStops} hasAddresses={addresses.size > 0} setTab={setTab} />}
+        {tab === "add" && !loading && <AddTab addStops={addStops} hasAddresses={addresses.size > 0} setTab={setTab} ocrCtx={ocrCtx} />}
+        {tab === "stats" && !loading && (
+          <StatsTab {...{ dayGeoLen, dayStreetLen, needsUpdate, say,
+            doneCount: done.length, failedCount: failed.length, laterCount: later.length }} />
+        )}
         {tab === "settings" && (
-          <SettingsTab {...{ session, addresses, entrances, importCity, setPicking, radius,
+          <SettingsTab {...{ session, addresses, entrances, importCity, setPicking, radius, needsUpdate, reload,
             setStartPoint: (pt) => { setStart(pt); save("kurier-start", pt); say("Štart trasy je uložený."); },
             setRadius: (r) => { setRadius(r); save("kurier-radius", r); }, setTab }} />
         )}
@@ -274,7 +317,8 @@ function Courier({ session }) {
 
       <nav className="tabs">
         <button aria-pressed={tab === "route"} onClick={() => setTab("route")}>Trasa</button>
-        <button aria-pressed={tab === "add"} onClick={() => setTab("add")}>Pridať balíky</button>
+        <button aria-pressed={tab === "add"} onClick={() => setTab("add")}>Pridať</button>
+        <button aria-pressed={tab === "stats"} onClick={() => setTab("stats")}>Prehľad</button>
         <button aria-pressed={tab === "settings"} onClick={() => setTab("settings")}>Nastavenia</button>
       </nav>
 
@@ -290,7 +334,7 @@ function navLinks(s) {
   };
 }
 
-function RouteTab({ plan, mode, setMode, missing, done, selected, selN, selectedId, select, patchStop, deleteStop,
+function RouteTab({ plan, mode, setMode, missing, done, failed, later, selected, selN, selectedId, select, setStatus, deleteStop,
   setPicking, forgetEntrance, clearDelivered, setTab, setFocus, start }) {
   const total = plan.reduce((s, g) => s + g.items.length, 0);
   const firstOpen = plan[0]?.items[0];
@@ -304,11 +348,22 @@ function RouteTab({ plan, mode, setMode, missing, done, selected, selN, selected
           </div>
           {selected.fixed && <p className="muted">Naučený vchod{selected.note ? `: ${selected.note}` : ""}.</p>}
           {selected.lat == null && <p className="muted">Adresu sa nepodarilo nájsť. Označ ju na mape a appka si ju zapamätá.</p>}
+          {selected.status !== "open" && (
+            <p className="status-line" style={{ color: STATUS[selected.status].color }}>{STATUS[selected.status].label}</p>
+          )}
+          {selected.status === "open" ? (
+            <div className="status-btns">
+              <button className="sbtn ok" onClick={() => setStatus(selected, "delivered")}>✓<span>Doručené</span></button>
+              <button className="sbtn bad" onClick={() => setStatus(selected, "failed")}>✕<span>Nedoručené</span></button>
+              <button className="sbtn later" onClick={() => setStatus(selected, "later")}>☎<span>Zavolať neskôr</span></button>
+            </div>
+          ) : (
+            <div className="row wrap">
+              <button className="btn" onClick={() => setStatus(selected, "open")}>Vrátiť na trasu</button>
+            </div>
+          )}
           <div className="row wrap">
-            {selected.lat != null && !selected.delivered && (
-              <button className="btn primary" onClick={() => { patchStop(selected.id, { delivered: true }); select(null); }}>Doručené</button>
-            )}
-            {selected.delivered && <button className="btn" onClick={() => patchStop(selected.id, { delivered: false })}>Vrátiť medzi nedoručené</button>}
+            {selected.phone && <a className="btn primary" href={`tel:${selected.phone}`}>Zavolať {selected.phone}</a>}
             {selected.lat != null && (
               <>
                 <a className="btn" href={navLinks(selected).google} target="_blank" rel="noreferrer">Google Maps</a>
@@ -338,7 +393,7 @@ function RouteTab({ plan, mode, setMode, missing, done, selected, selN, selected
         <button className="btn small" onClick={() => setFocus({ type: "all", t: Date.now() })}>Celá trasa</button>
       </div>
 
-      {total === 0 && missing.length === 0 && done.length === 0 && (
+      {total === 0 && missing.length === 0 && done.length === 0 && failed.length === 0 && later.length === 0 && (
         <section className="empty">
           <h2>Dnes zatiaľ žiadne balíky</h2>
           <p className="muted">Vlož adresy z dnešnej trasy a appka ich zoskupí podľa toho, kde domy reálne stoja.</p>
@@ -393,22 +448,30 @@ function RouteTab({ plan, mode, setMode, missing, done, selected, selN, selected
         );
       })}
 
-      {done.length > 0 && (
-        <section className="group">
-          <div className="ghead"><span className="dot" style={{ background: "#8b958f" }} /><span>Doručené</span><span className="count">{done.length} ks</span></div>
+      {[["later", later], ["failed", failed], ["delivered", done]].map(([st, list]) => list.length > 0 && (
+        <section className="group" key={st}>
+          <div className="ghead"><span className="dot" style={{ background: STATUS[st].color }} /><span>{STATUS[st].title}</span><span className="count">{list.length} ks</span></div>
           <ul className="list">
-            {done.map((s) => (
-              <li key={s.id}><button className="item done" onClick={() => select(s.id)}>
-                <span className="num">✓</span><span className="addr">{s.label}</span></button></li>
+            {list.map((s) => (
+              <li key={s.id}><button className={"item " + st + (s.id === selectedId ? " cur" : "")} onClick={() => select(s.id)}>
+                <span className="num">{STATUS[st].icon}</span><span className="addr">{s.label}</span>
+                {s.phone && st === "later" ? <span className="tag cross">{s.phone}</span> : null}</button></li>
             ))}
           </ul>
-          <button className="btn small" onClick={clearDelivered}>Vymazať doručené zo zoznamu</button>
+          {st === "delivered" && <button className="btn small" onClick={clearDelivered}>Vymazať doručené zo zoznamu</button>}
         </section>
-      )}
+      ))}
       {start && total > 0 && <p className="muted small">Trasa začína v bode ŠTART. Zmeníš ho v Nastaveniach.</p>}
     </div>
   );
 }
+
+export const STATUS = {
+  open: { label: "Na trase", title: "Na trase", icon: "•", color: "#2f6fb5", done: "Balík je späť na trase." },
+  delivered: { label: "Doručené", title: "Doručené", icon: "✓", color: "#2e8b57", done: "Doručené ✓" },
+  failed: { label: "Nedoručené – nikto doma", title: "Nedoručené", icon: "✕", color: "#c0392b", done: "Označené ako nedoručené." },
+  later: { label: "Zavolať neskôr", title: "Zavolať neskôr", icon: "☎", color: "#c7861d", done: "Odložené, zavoláš neskôr." },
+};
 
 function mostCommon(a) {
   const c = {};
@@ -416,12 +479,14 @@ function mostCommon(a) {
   return Object.keys(c).sort((x, y) => c[y] - c[x])[0];
 }
 
-function AddTab({ addStops, hasAddresses, setTab }) {
+function AddTab({ addStops, hasAddresses, setTab, ocrCtx }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);
   const [result, setResult] = useState(null);
   const [err, setErr] = useState(null);
+  const [scans, setScans] = useState([]); // [{id, address, phone, confident, candidates}]
+  const [reading, setReading] = useState(null);
 
   async function submit(e) {
     e.preventDefault();
@@ -434,14 +499,86 @@ function AddTab({ addStops, hasAddresses, setTab }) {
     finally { setBusy(false); setProgress(null); }
   }
 
+  async function onPhotos(e) {
+    const files = [...(e.target.files || [])];
+    e.target.value = "";
+    if (!files.length) return;
+    setErr(null); setResult(null);
+    const { readLabel } = await import("./lib/ocr.js");
+    for (let i = 0; i < files.length; i++) {
+      setReading(files.length > 1 ? `Čítam štítok ${i + 1} / ${files.length}…` : "Čítam štítok…");
+      try {
+        const r = await readLabel(files[i], ocrCtx, setReading);
+        setScans((s) => [{ id: crypto.randomUUID?.() || String(Date.now() + i), ...r }, ...s]);
+      } catch (e2) {
+        setErr("Štítok sa nepodarilo prečítať: " + e2.message);
+      }
+    }
+    setReading(null);
+  }
+
+  const editScan = (id, patch) => setScans((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const ready = scans.filter((s) => s.address.trim());
+
+  async function addScans() {
+    setBusy(true); setErr(null); setResult(null);
+    try {
+      const r = await addStops(ready.map((s) => ({ line: s.address, phone: s.phone || null })), (i, n) => setProgress(`${i} / ${n}`));
+      setResult(r); setScans([]);
+    } catch (e2) { setErr("Nepodarilo sa uložiť: " + e2.message); }
+    finally { setBusy(false); setProgress(null); }
+  }
+
   return (
     <form className="stack" onSubmit={submit}>
       <h2>Pridať balíky</h2>
       {!hasAddresses && (
         <p className="card warn">Databáza ešte nemá adresy mesta. Najprv ich načítaj v <button type="button" className="link" onClick={() => setTab("settings")}>Nastaveniach</button>, inak bude hľadanie pomalé.</p>
       )}
-      <label htmlFor="addrs">Jedna adresa na riadok. Stačí ulica a číslo.</label>
-      <textarea id="addrs" rows={8} value={text} onChange={(e) => setText(e.target.value)}
+
+      <section className="card">
+        <h3>Odfotiť štítky</h3>
+        <p className="muted">Odfoť štítok tak, aby bola adresa príjemcu čitateľná. Appka nájde adresu aj telefón, ty len skontroluješ.</p>
+        <div className="row wrap">
+          <label className="btn primary big file-btn">
+            Odfotiť štítok
+            <input type="file" accept="image/*" capture="environment" onChange={onPhotos} disabled={!!reading} />
+          </label>
+          <label className="btn file-btn">
+            Vybrať fotky
+            <input type="file" accept="image/*" multiple onChange={onPhotos} disabled={!!reading} />
+          </label>
+        </div>
+        {reading && <p className="muted" role="status">{reading}</p>}
+        {scans.length > 0 && (
+          <>
+            <ul className="scan-list">
+              {scans.map((s) => (
+                <li key={s.id} className={"scan" + (s.address ? (s.confident ? "" : " unsure") : " empty")}>
+                  <input aria-label="Adresa" value={s.address} placeholder="Adresu som neprečítal, dopíš ju"
+                    onChange={(e) => editScan(s.id, { address: e.target.value })} />
+                  <input aria-label="Telefón" value={s.phone} placeholder="Telefón (nepovinné)" inputMode="tel"
+                    onChange={(e) => editScan(s.id, { phone: e.target.value })} />
+                  {s.candidates.length > 1 && (
+                    <div className="row wrap">
+                      <span className="muted small">Alebo:</span>
+                      {s.candidates.filter((c) => c !== s.address).map((c) => (
+                        <button type="button" key={c} className="btn small" onClick={() => editScan(s.id, { address: c })}>{c}</button>
+                      ))}
+                    </div>
+                  )}
+                  <button type="button" className="link small" onClick={() => setScans((x) => x.filter((y) => y.id !== s.id))}>Zahodiť</button>
+                </li>
+              ))}
+            </ul>
+            <button type="button" className="btn primary big" disabled={busy || !ready.length} onClick={addScans}>
+              {busy ? `Pridávam… ${progress || ""}` : `Pridať ${ready.length} na trasu`}</button>
+          </>
+        )}
+      </section>
+
+      <label htmlFor="addrs">Alebo napíš adresy ručne, jednu na riadok.</label>
+      <textarea id="addrs" rows={5} value={text} onChange={(e) => setText(e.target.value)}
         placeholder={"Nitrianska 12\nHorská 8\nR. Jašíka 1203/5"} />
       <button className="btn primary big" disabled={busy}>{busy ? `Hľadám adresy… ${progress || ""}` : "Pridať na trasu"}</button>
       {err && <p className="err">{err}</p>}
@@ -456,17 +593,38 @@ function AddTab({ addStops, hasAddresses, setTab }) {
   );
 }
 
-function SettingsTab({ session, addresses, entrances, importCity, setPicking, setStartPoint, radius, setRadius }) {
+function SettingsTab({ session, addresses, entrances, importCity, setPicking, setStartPoint, radius, setRadius, needsUpdate, reload }) {
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
   async function runImport() {
     setBusy(true);
     try { await importCity(setStatus); } catch (e) { setStatus("Nepodarilo sa: " + e.message + ". Skús to o chvíľu znova."); }
     finally { setBusy(false); }
   }
+  async function copySql() {
+    try { await navigator.clipboard.writeText(updateSql); setCopied(true); }
+    catch { document.getElementById("sql-box")?.select(); }
+  }
   return (
     <div className="stack">
       <h2>Nastavenia</h2>
+      {needsUpdate && (
+        <section className="card warn">
+          <h3>Aktualizácia databázy</h3>
+          <p>Pre stavy balíkov, telefóny, tachometer a tankovanie treba raz aktualizovať databázu:</p>
+          <ol className="steps">
+            <li>Klikni <b>Kopírovať</b>.</li>
+            <li>V Supabase otvor <b>SQL Editor → New query</b>, vlož text a klikni <b>Run</b>.</li>
+            <li>Vráť sa sem a klikni <b>Hotovo, skontrolovať</b>.</li>
+          </ol>
+          <textarea id="sql-box" readOnly rows={4} value={updateSql} aria-label="Príkaz pre databázu" />
+          <div className="row wrap">
+            <button className="btn primary" onClick={copySql}>{copied ? "Skopírované ✓" : "Kopírovať"}</button>
+            <button className="btn" onClick={reload}>Hotovo, skontrolovať</button>
+          </div>
+        </section>
+      )}
       <section className="card">
         <h3>Štart trasy</h3>
         <p className="muted">Odkiaľ ráno vyrážaš, napríklad depo. Od tohto bodu sa počíta poradie zastávok.</p>

@@ -47,3 +47,41 @@ const t0 = Date.now(); planRoute(many, start, 80); const ms = Date.now() - t0;
 console.log("250 zastávok naplánovaných za", ms, "ms; mestská trasa skrátená o",
   Math.round((1 - routeLength(planRoute(many, start).flatMap((c) => c.items), start) / routeLength(streetOrder(many), start)) * 100), "%");
 console.log("Všetky testy prešli.");
+
+// --- čítanie štítku ---
+const { extractFromText, normPhone } = await import("../src/lib/ocr.js");
+const ctx = { streets: ["Nitrianska", "Horská", "Februárová", "R. Jašíka"], keys: new Set(["nitrianska|12", "februarova|5"]) };
+const label = `Odosielateľ: Alza.sk s.r.o.
+Jankovcova 1522/53
+170 00 Praha 7
+Príjemca: Ján Novák
+Nitrianska 1203/12
+958 01 Partizánske
+Tel: +421 905 123 456`;
+let r = extractFromText(label, ctx);
+assert.equal(r.address, "Nitrianska 12");
+assert.equal(r.confident, true);
+assert.equal(r.phone, "+421905123456");
+r = extractFromText("JAN NOVAK\nFebruarova 5\n95801 PARTIZANSKE\n0908 111 222", ctx);
+assert.equal(r.address, "Februárová 5");
+assert.equal(r.phone, "+421908111222");
+r = extractFromText("nečitateľný text bez adresy", ctx);
+assert.equal(r.address, "");
+assert.equal(normPhone("0905/123 456"), "+421905123456");
+
+// --- prehľad ---
+const { summarize, fuelEconomy, savedKmToday, tripKm } = await import("../src/lib/stats.js");
+const fuel = [
+  { at: "2026-10-01T08:00:00Z", liters: 40, total_eur: 62, odo: 10000 },
+  { at: "2026-10-08T08:00:00Z", liters: 48, total_eur: 72, odo: 10600 },
+];
+const eco = fuelEconomy(fuel);
+assert.equal(Math.round(eco.consumption * 10) / 10, 8);          // 48 l / 600 km
+assert.equal(eco.price, 1.5);                                     // posledné tankovanie 72 € / 48 l
+assert.equal(tripKm({ odo_start: 10000, odo_end: 10120 }), 120);
+assert.equal(Math.round(savedKmToday(10000, 7000) * 10) / 10, 3.9);                     // 3 km vzdušne × 1,3
+const sum = summarize({ trips: [{ day: "2026-10-02", odo_start: 1, odo_end: 121, saved_km: 4, delivered: 150 }], fuel, todaySavedKm: 2, todayKey: "2026-10-07" });
+assert.equal(sum.km, 120);
+assert.equal(sum.savedKm, 6);
+assert.equal(Math.round(sum.savedEur * 100) / 100, 0.72);         // 6 km × 0,08 l × 1,5 €
+console.log("Testy štítkov a prehľadu prešli.");
