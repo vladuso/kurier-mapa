@@ -6,6 +6,7 @@ import { CITY, fetchCityAddresses, geocodeOne } from "./lib/geodata.js";
 import MapView, { PALETTE } from "./components/MapView.jsx";
 import AuthScreen from "./components/AuthScreen.jsx";
 import StatsTab from "./components/StatsTab.jsx";
+import AdminTab from "./components/AdminTab.jsx";
 import updateSql from "../supabase/update-2-stavy.sql?raw";
 
 const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD v miestnom čase
@@ -53,6 +54,8 @@ function Courier({ session }) {
   const [radius, setRadius] = useState(() => load("kurier-radius", 80));
   const [focus, setFocus] = useState(null);
   const [needsUpdate, setNeedsUpdate] = useState(false); // databáza ešte nemá stĺpec status
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => { supabase.rpc("is_admin").then(({ data, error }) => setIsAdmin(!error && data === true)); }, []);
 
   const say =useCallback((text) => { setToast(text); setTimeout(() => setToast((t) => (t === text ? null : t)), 2200); }, []);
 
@@ -62,7 +65,7 @@ function Courier({ session }) {
       const [addr, ent, st] = await Promise.all([
         fetchAll("addresses", "key,street,number,lat,lon"),
         fetchAll("entrances", "key,lat,lon,note"),
-        supabase.from("stops").select("*").eq("day", today()).order("created_at"),
+        supabase.from("stops").select("*").eq("day", today()).eq("user_id", session.user.id).order("created_at"),
       ]);
       if (st.error) throw st.error;
       const probe = await supabase.from("stops").select("status,phone").limit(1);
@@ -304,8 +307,9 @@ function Courier({ session }) {
             setPicking, forgetEntrance, clearDelivered, setTab, setFocus, start }} />
         )}
         {tab === "add" && !loading && <AddTab addStops={addStops} hasAddresses={addresses.size > 0} setTab={setTab} ocrCtx={ocrCtx} />}
+        {tab === "admin" && isAdmin && <AdminTab say={say} />}
         {tab === "stats" && !loading && (
-          <StatsTab {...{ dayGeoLen, dayStreetLen, needsUpdate, say,
+          <StatsTab {...{ dayGeoLen, dayStreetLen, needsUpdate, say, userId: session.user.id,
             doneCount: done.length, failedCount: failed.length, laterCount: later.length }} />
         )}
         {tab === "settings" && (
@@ -315,10 +319,11 @@ function Courier({ session }) {
         )}
       </main>
 
-      <nav className="tabs">
+      <nav className={"tabs" + (isAdmin ? " five" : "")}>
         <button aria-pressed={tab === "route"} onClick={() => setTab("route")}>Trasa</button>
         <button aria-pressed={tab === "add"} onClick={() => setTab("add")}>Pridať</button>
         <button aria-pressed={tab === "stats"} onClick={() => setTab("stats")}>Prehľad</button>
+        {isAdmin && <button aria-pressed={tab === "admin"} onClick={() => setTab("admin")}>Správca</button>}
         <button aria-pressed={tab === "settings"} onClick={() => setTab("settings")}>Nastavenia</button>
       </nav>
 

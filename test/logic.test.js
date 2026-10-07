@@ -88,3 +88,17 @@ console.log("Testy štítkov a prehľadu prešli.");
 assert.equal(fuelEconomy(fuel, 1.62).price, 1.62);               // ručne zapísaná cena má prednosť
 assert.equal(fuelEconomy(fuel, null).price, 1.5);
 console.log("Test ručnej ceny nafty prešiel.");
+
+// --- správca ---
+const { adminRows, depotTotals } = await import("../src/lib/admin.js");
+const rowsA = adminRows({
+  couriers: [{ id: "a", email: "jano@x.sk" }, { id: "b", email: "fero@x.sk" }],
+  stops: [{ user_id: "a", status: "delivered" }, { user_id: "a", status: "failed" }, { user_id: "a", status: "open" }, { user_id: "a", status: "later" }, { user_id: "b", delivered: true }],
+  trips: [{ user_id: "a", day: "2026-10-07", odo_start: 100, odo_end: 220, saved_km: 5 }], fuel: [], day: "2026-10-07",
+});
+assert.deepEqual([rowsA[0].delivered, rowsA[0].failed, rowsA[0].later, rowsA[0].open, rowsA[0].total], [1, 1, 1, 1, 4]);
+assert.equal(rowsA[0].todayKm, 120);
+assert.equal(rowsA[1].delivered, 1);   // starý záznam bez stĺpca status
+const tot = depotTotals(rowsA);
+assert.equal(tot.active, 2); assert.equal(tot.total, 5); assert.equal(tot.savedKm, 5);
+console.log("Testy správcu prešli.");

@@ -9,7 +9,7 @@ const n0 = (x) => Math.round(x || 0).toLocaleString("sk-SK");
 const toNum = (s) => { const v = parseFloat(String(s).replace(",", ".")); return Number.isFinite(v) ? v : null; };
 const hm = (min) => { const h = Math.floor(min / 60), m = Math.round(min % 60); return h ? `${h} h ${m} min` : `${m} min`; };
 
-export default function StatsTab({ dayStreetLen, dayGeoLen, doneCount, failedCount, laterCount, needsUpdate, say }) {
+export default function StatsTab({ dayStreetLen, dayGeoLen, doneCount, failedCount, laterCount, needsUpdate, say, userId }) {
   const [trips, setTrips] = useState([]);
   const [fuel, setFuel] = useState([]);
   const [err, setErr] = useState(null);
@@ -24,8 +24,8 @@ export default function StatsTab({ dayStreetLen, dayGeoLen, doneCount, failedCou
 
   const load = useCallback(async () => {
     const [t, f] = await Promise.all([
-      supabase.from("trips").select("*").gte("day", fromDay).lt("day", toDay).order("day"),
-      supabase.from("fuel").select("*").gte("at", from.toISOString()).lt("at", to.toISOString()).order("at", { ascending: false }),
+      supabase.from("trips").select("*").eq("user_id", userId).gte("day", fromDay).lt("day", toDay).order("day"),
+      supabase.from("fuel").select("*").eq("user_id", userId).gte("at", from.toISOString()).lt("at", to.toISOString()).order("at", { ascending: false }),
     ]);
     if (t.error || f.error) { setErr((t.error || f.error).message); return; }
     setTrips(t.data); setFuel(f.data); setErr(null);
