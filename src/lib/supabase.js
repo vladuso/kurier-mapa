@@ -1,7 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Verejné údaje projektu (publishable kľúč je určený do prehliadača, nie je tajný).
+// Premenné vo Verceli majú prednosť, ak sú nastavené.
+const url = import.meta.env.VITE_SUPABASE_URL || "https://qjmsmfvejneouznrrlba.supabase.co";
+const key = import.meta.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_pGzsn7kzEq1_uWIj3mo--A_ZyPl9sG-";
 
 export const configured = Boolean(url && key);
 export const supabase = configured ? createClient(url, key) : null;
