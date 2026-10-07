@@ -85,3 +85,6 @@ assert.equal(sum.km, 120);
 assert.equal(sum.savedKm, 6);
 assert.equal(Math.round(sum.savedEur * 100) / 100, 0.72);         // 6 km × 0,08 l × 1,5 €
 console.log("Testy štítkov a prehľadu prešli.");
+assert.equal(fuelEconomy(fuel, 1.62).price, 1.62);               // ručne zapísaná cena má prednosť
+assert.equal(fuelEconomy(fuel, null).price, 1.5);
+console.log("Test ručnej ceny nafty prešiel.");

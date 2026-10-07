@@ -17,6 +17,8 @@ export default function StatsTab({ dayStreetLen, dayGeoLen, doneCount, failedCou
   const [odoEnd, setOdoEnd] = useState("");
   const [fl, setFl] = useState({ liters: "", total: "", odo: "" });
   const [busy, setBusy] = useState(false);
+  const [priceInput, setPriceInput] = useState("");
+  const [priceSaved, setPriceSaved] = useState(null);
   const { fromDay, toDay, from, to } = monthBounds();
   const todayKey = today();
 
@@ -32,8 +34,27 @@ export default function StatsTab({ dayStreetLen, dayGeoLen, doneCount, failedCou
   }, [fromDay, toDay]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!needsUpdate) load(); }, [load, needsUpdate]);
 
+  // cena nafty sa ukladá k účtu kuriéra, platí na všetkých jeho zariadeniach
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      const p = data.user?.user_metadata?.fuel_price;
+      if (p > 0) { setPriceSaved(p); setPriceInput(String(p).replace(".", ",")); }
+    });
+  }, []);
+
+  async function savePrice(e) {
+    e.preventDefault();
+    const p = toNum(priceInput);
+    if (priceInput.trim() && !(p > 0.5 && p < 5)) { setErr("Cenu napíš v eurách za liter, napríklad 1,52."); return; }
+    const value = priceInput.trim() ? p : null;
+    const { error } = await supabase.auth.updateUser({ data: { fuel_price: value } });
+    if (error) { setErr(error.message); return; }
+    setPriceSaved(value); setErr(null);
+    say(value ? "Cena nafty je uložená." : "Cena sa bude brať z posledného tankovania.");
+  }
+
   const todaySaved = savedKmToday(dayStreetLen, dayGeoLen);
-  const s = useMemo(() => summarize({ trips, fuel, todaySavedKm: todaySaved, todayKey }), [trips, fuel, todaySaved, todayKey]);
+  const s = useMemo(() => summarize({ trips, fuel, todaySavedKm: todaySaved, todayKey, priceOverride: priceSaved }), [trips, fuel, todaySaved, todayKey, priceSaved]);
   const todayTrip = trips.find((t) => t.day === todayKey);
   const todayKm = todayTrip ? tripKm(todayTrip) : 0;
   const deliveredMonth = s.delivered - (todayTrip?.delivered || 0) + doneCount;
@@ -113,6 +134,20 @@ export default function StatsTab({ dayStreetLen, dayGeoLen, doneCount, failedCou
       </section>
 
       <section className="card">
+        <h3>Cena nafty</h3>
+        <form className="row" onSubmit={savePrice}>
+          <input id="fuel-price" aria-label="Cena nafty v eurách za liter" inputMode="decimal" placeholder="napr. 1,52"
+            value={priceInput} onChange={(e) => setPriceInput(e.target.value)} style={{ maxWidth: "8rem" }} />
+          <span className="muted">€/l</span>
+          <button className="btn primary">Uložiť</button>
+        </form>
+        <p className="muted small">
+          {priceSaved ? "Úspora sa počíta s touto cenou." :
+            s.lastPrice ? "Kým cenu nezapíšeš, počíta sa z posledného tankovania." : "Kým cenu nezapíšeš, počíta sa s odhadom 1,55 €/l."}
+        </p>
+      </section>
+
+      <section className="card">
         <h3>Tankovanie</h3>
         <form className="grid2" onSubmit={addFuel}>
           <label htmlFor="f-l">Litre</label>
@@ -140,7 +175,8 @@ export default function StatsTab({ dayStreetLen, dayGeoLen, doneCount, failedCou
         <h3>Auto</h3>
         <table className="facts"><tbody>
           <tr><th>Spotreba</th><td>{n1(s.consumptionUsed)} l/100 km{!s.measured && <span className="muted"> (odhad, spresní sa po 2 tankovaniach s tachometrom)</span>}</td></tr>
-          <tr><th>Cena nafty</th><td>{s.price ? `${s.price.toLocaleString("sk-SK", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} €/l` : "1,550 €/l (odhad)"}</td></tr>
+          <tr><th>Cena nafty</th><td>{s.price ? `${s.price.toLocaleString("sk-SK", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} €/l` : "1,55 €/l (odhad)"}
+            {s.price && !s.priceManual && <span className="muted"> (z posledného tankovania)</span>}</td></tr>
           <tr><th>1 km stojí</th><td>{eur(s.costPerKm)}</td></tr>
           <tr><th>Natankované ({monthName})</th><td>{n1(s.fuelL)} l</td></tr>
           <tr><th>Doručené ({monthName})</th><td>{n0(deliveredMonth)} balíkov</td></tr>

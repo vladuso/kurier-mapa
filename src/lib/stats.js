@@ -8,7 +8,7 @@ export const DEFAULT_PRICE = 1.55;      // €/l, kým nie je prvé tankovanie
 const num = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
 
 // Spotreba z tankovaní: litre natankované po prvom tankovaní / km medzi prvým a posledným tankovaním
-export function fuelEconomy(fuel) {
+export function fuelEconomy(fuel, priceOverride = null) {
   const withOdo = fuel.filter((f) => num(f.odo) != null).sort((a, b) => num(a.odo) - num(b.odo));
   let consumption = null;
   if (withOdo.length >= 2) {
@@ -17,9 +17,11 @@ export function fuelEconomy(fuel) {
     if (km > 50 && liters > 0) consumption = (liters / km) * 100;
   }
   const last = [...fuel].sort((a, b) => new Date(b.at) - new Date(a.at))[0];
-  const price = last ? num(last.total_eur) / num(last.liters) : null;
+  const lastPrice = last ? num(last.total_eur) / num(last.liters) : null;
+  // cena, ktorú si kuriér zapísal sám, má prednosť pred cenou z posledného tankovania
+  const price = priceOverride > 0 ? priceOverride : lastPrice;
   return {
-    consumption, price,
+    consumption, price, lastPrice, priceManual: priceOverride > 0,
     consumptionUsed: consumption ?? DEFAULT_CONSUMPTION,
     priceUsed: price ?? DEFAULT_PRICE,
     measured: consumption != null,
@@ -37,8 +39,8 @@ export function savedKmToday(streetLenM, geoLenM) {
   return ((streetLenM - geoLenM) / 1000) * ROAD_FACTOR;
 }
 
-export function summarize({ trips, fuel, todaySavedKm = 0, todayKey }) {
-  const eco = fuelEconomy(fuel);
+export function summarize({ trips, fuel, todaySavedKm = 0, todayKey, priceOverride = null }) {
+  const eco = fuelEconomy(fuel, priceOverride);
   const costPerKm = (eco.consumptionUsed / 100) * eco.priceUsed;
   // dnešný deň počítame živo, uložené dni z databázy
   const savedKm = trips.reduce((s, t) => s + (t.day === todayKey ? 0 : num(t.saved_km) || 0), 0) + todaySavedKm;
